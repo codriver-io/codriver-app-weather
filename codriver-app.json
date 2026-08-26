@@ -1,0 +1,19 @@
+{
+  "$comment": "Manifest for the codriver app marketplace.",
+  "name": "Weather",
+  "description": "Current conditions and the next few hours for a city you choose. Uses the car's unit setting.",
+  "install_instructions": "In codriver.io/account -> Apps -> Weather, type the city you want (Paris by default). The widget follows the units set in codriver, so it shows Celsius or Fahrenheit to match the rest of the car. It does not use your location: codriver never gives an extension your position, so the city is a setting rather than something detected.",
+  "integration_types": ["widget"],
+  "widget_url": "https://weather-codriver.pages.dev",
+  "website_url": "https://weather-codriver.pages.dev",
+  "docs_url": "https://developer.codriver.io/guides/build-an-app",
+  "cost_model": "free",
+  "version": "1.0.0",
+  "config_schema": {
+    "fields": [
+      { "key": "city", "label": "City", "type": "string", "required": true,
+        "default": "Paris", "maxLength": 64,
+        "help": "Any city name. Paris if you leave it alone." }
+    ]
+  }
+}

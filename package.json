@@ -1,0 +1,10 @@
+{
+  "name": "codriver-app-weather",
+  "private": true,
+  "description": "Next hours of weather in a codriver widget slot",
+  "scripts": {
+    "serve": "python3 -m http.server 8792 -d public",
+    "deploy": "wrangler pages deploy public --project-name weather-codriver --branch main --commit-dirty=true"
+  },
+  "devDependencies": { "wrangler": "^4.120.0" }
+}

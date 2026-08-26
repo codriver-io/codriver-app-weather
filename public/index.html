@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Weather — codriver app</title>
+<style>
+/* ============================================================================
+   THEME TOKENS — the two-theme contract shared by the codriver apps.
+   Nothing animates. A weather panel that pulses or slides is motion in the
+   driver's periphery, and peripheral motion costs attention the road needs.
+   ========================================================================= */
+:root {
+  --bg: #0c0e11; --bg-elev: #14171c;
+  --fg: #e9ecef; --fg-muted: #9aa2ad; --fg-faint: #6b7480;
+  --rule: rgba(255,255,255,.09);
+  --wet: #6ab7f0;     /* precipitation probability */
+  --warn: #f0a63c;
+  --fs: 13.5px;
+}
+:root[data-theme="light"] {
+  --bg: #f2f3f5; --bg-elev: #ffffff;
+  --fg: #14171c; --fg-muted: #5b6470; --fg-faint: #8b939e;
+  --rule: rgba(0,0,0,.10);
+  --wet: #1668a8; --warn: #b06a00;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--fg);
+  font: 400 var(--fs)/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  display: flex; flex-direction: column; overflow: hidden;
+  padding: calc(var(--fs) * .5) calc(var(--fs) * .6);
+  font-variant-numeric: tabular-nums;
+}
+
+header {
+  display: flex; align-items: baseline; justify-content: space-between; gap: .5em;
+  flex: 0 0 auto; padding-bottom: calc(var(--fs) * .28);
+  border-bottom: 1px solid var(--rule);
+}
+.place { font-size: .78em; letter-spacing: .07em; text-transform: uppercase; color: var(--fg-faint);
+         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stamp { font-size: .72em; color: var(--fg-faint); white-space: nowrap; }
+
+#body { flex: 1 1 auto; display: flex; align-items: center; gap: calc(var(--fs) * .7); min-height: 0;
+        padding-top: calc(var(--fs) * .25); }
+
+/* Now: the one number worth a glance, so it gets the size. */
+.now { flex: 0 0 auto; display: flex; flex-direction: column; gap: .05em; min-width: 0; }
+.now-temp { font-size: 2.1em; font-weight: 600; line-height: 1; letter-spacing: -.02em; }
+.now-desc { font-size: .74em; color: var(--fg-muted); max-width: 7.5em;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Next hours: a small column each, so the shape of the afternoon is readable
+   without reading any single number. */
+.hours { flex: 1 1 auto; display: flex; justify-content: space-between; gap: calc(var(--fs) * .25); min-width: 0; }
+.hr { display: flex; flex-direction: column; align-items: center; gap: .12em; flex: 1 1 0; min-width: 0; }
+.hr-h { font-size: .68em; color: var(--fg-faint); }
+.hr-t { font-size: .92em; font-weight: 600; }
+.hr-p { font-size: .66em; color: var(--wet); min-height: 1em; }
+.hr-p:empty::after { content: "\00a0"; }
+
+#msg { flex: 1 1 auto; display: none; align-items: center; justify-content: center;
+       text-align: center; color: var(--fg-muted); font-size: .85em; padding: 0 .4em; }
+body[data-state="msg"] #body { display: none; }
+body[data-state="msg"] #msg  { display: flex; }
+.stale { color: var(--fg-faint); }
+</style>
+</head>
+<body data-state="msg">
+  <header>
+    <span class="place" id="place">Weather</span>
+    <span class="stamp" id="stamp"></span>
+  </header>
+  <div id="body">
+    <div class="now">
+      <span class="now-temp" id="nowTemp">–</span>
+      <span class="now-desc" id="nowDesc"></span>
+    </div>
+    <div class="hours" id="hours"></div>
+  </div>
+  <div id="msg">Waiting for codriver…</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   A codriver app: the next few hours of weather, in a widget slot.
+
+   DATA SOURCE
+   Open-Meteo. No key, CORS-open, generous free tier, and it will return the
+   current conditions and an hourly series in a single request — which is why
+   this widget makes one call per refresh rather than one per panel element.
+
+   WHY A FIXED PLACE AND NOT THE CAR'S POSITION
+   codriver deliberately does not pass location to a widget: the whole point of
+   the sandbox is that an embedded page cannot learn where the driver is. So the
+   place is configured by the driver on their account, once. For the commute
+   this covers ("what is the sky doing where I am going"), a fixed home city is
+   what people actually want anyway.
+
+   UNITS
+   Taken from the host's `context.units`, so the widget matches whatever the rest
+   of the car is showing rather than having its own opinion. Changing units in
+   codriver re-renders this panel without a refetch — the API is asked for both
+   the value and the unit, and we convert locally.
+
+   TIME HANDLING
+   The API is asked for `timeformat=unixtime`. Its default ISO strings carry no
+   offset ("2026-08-26T09:00"), so `new Date()` parses them in the BROWSER's
+   timezone — which silently picks the wrong "next hours" whenever the car and
+   the configured city are in different zones, and is invisible when they are
+   not. Epoch seconds compare unambiguously; the city's own clock is then
+   epoch + utc_offset_seconds, read back with getUTC*.
+
+   SECURITY POSTURE
+   No innerHTML in this file. Everything from the API — including the city name
+   the geocoder returns — is written with textContent onto constructed nodes.
+   ========================================================================= */
+
+var REFRESH_MS = 600000;    /* 10 min: the hourly series does not move faster */
+var TIMEOUT_MS = 12000;
+var HOURS      = 4;         /* what fits beside the current temp at 300px */
+var GEO_API    = "https://geocoding-api.open-meteo.com/v1/search";
+var FC_API     = "https://api.open-meteo.com/v1/forecast";
+
+/* Paris, so the widget is useful the moment it is installed and still works if
+   the geocoder is unreachable. */
+var DEFAULT_PLACE = { name: "Paris", lat: 48.8566, lon: 2.3522 };
+
+var el = {
+  place: document.getElementById("place"),
+  stamp: document.getElementById("stamp"),
+  nowTemp: document.getElementById("nowTemp"),
+  nowDesc: document.getElementById("nowDesc"),
+  hours: document.getElementById("hours"),
+  msg: document.getElementById("msg")
+};
+
+var state = {
+  city: null, place: null, units: "metric",
+  hostOrigin: null, data: null, fetchedAt: 0,
+  timer: null, inflight: false, stale: false
+};
+
+/* WMO weather codes. Short words on purpose: this is read at a glance, in
+   peripheral vision, by someone who is driving. */
+var WMO = {
+  0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast",
+  45: "Fog", 48: "Freezing fog",
+  51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle",
+  56: "Freezing drizzle", 57: "Freezing drizzle",
+  61: "Light rain", 63: "Rain", 65: "Heavy rain",
+  66: "Freezing rain", 67: "Freezing rain",
+  71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains",
+  80: "Showers", 81: "Showers", 82: "Heavy showers",
+  85: "Snow showers", 86: "Snow showers",
+  95: "Thunderstorm", 96: "Thunderstorm", 99: "Thunderstorm"
+};
+function describe(code) { return WMO[code] || "—"; }
+
+/* Codes worth colouring: ice, thunder and heavy precipitation are the ones a
+   driver would change plans over. Everything else stays neutral. */
+function isHazard(code) {
+  return code === 45 || code === 48 || code === 56 || code === 57 ||
+         code === 66 || code === 67 || code === 75 || code === 82 ||
+         code === 85 || code === 86 || code === 95 || code === 96 || code === 99;
+}
+
+function setMsg(text) { el.msg.textContent = text; document.body.setAttribute("data-state", "msg"); }
+
+function toDisplayTemp(celsius) {
+  if (state.units === "imperial") return Math.round(celsius * 9 / 5 + 32);
+  return Math.round(celsius);
+}
+function tempUnit() { return state.units === "imperial" ? "°F" : "°C"; }
+
+function render() {
+  var d = state.data;
+  if (!d || !d.current) return;
+
+  el.nowTemp.textContent = toDisplayTemp(d.current.temperature_2m) + tempUnit();
+  el.nowDesc.textContent = describe(d.current.weather_code);
+  el.nowDesc.style.color = isHazard(d.current.weather_code) ? "var(--warn)" : "";
+
+  el.hours.textContent = "";
+  var h = d.hourly || {};
+  var times = h.time || [], temps = h.temperature_2m || [],
+      pops = h.precipitation_probability || [], codes = h.weather_code || [];
+
+  /* Start from the first hour still ahead of us. The API returns from midnight,
+     so without this the panel shows this morning at 6pm. Times are epoch
+     seconds (see TIME HANDLING), so this comparison is timezone-proof. */
+  var nowSec = Math.floor(Date.now() / 1000), start = -1;
+  for (var i = 0; i < times.length; i++) {
+    if (times[i] > nowSec) { start = i; break; }
+  }
+  if (start === -1) start = Math.max(0, times.length - HOURS);
+
+  /* The city's wall clock, not the car's: epoch + the offset the API reports,
+     read back as UTC. */
+  var offset = (typeof d.utc_offset_seconds === "number") ? d.utc_offset_seconds : 0;
+
+  var shown = 0;
+  for (var j = start; j < times.length && shown < HOURS; j++, shown++) {
+    var when = new Date((times[j] + offset) * 1000);
+    var col = document.createElement("div"); col.className = "hr";
+
+    var hh = document.createElement("span");
+    hh.className = "hr-h";
+    hh.textContent = String(when.getUTCHours()).padStart(2, "0") + "h";
+
+    var tt = document.createElement("span");
+    tt.className = "hr-t";
+    tt.textContent = (typeof temps[j] === "number") ? toDisplayTemp(temps[j]) + "°" : "–";
+    if (isHazard(codes[j])) tt.style.color = "var(--warn)";
+
+    var pp = document.createElement("span");
+    pp.className = "hr-p";
+    /* Only show a probability worth acting on. A row of "0% 0% 0% 0%" is four
+       numbers that mean "nothing is happening" — better said with silence. */
+    pp.textContent = (typeof pops[j] === "number" && pops[j] >= 20) ? pops[j] + "%" : "";
+
+    col.appendChild(hh); col.appendChild(tt); col.appendChild(pp);
+    el.hours.appendChild(col);
+  }
+
+  document.body.setAttribute("data-state", "data");
+  stampNow();
+}
+
+function stampNow() {
+  if (!state.fetchedAt) { el.stamp.textContent = ""; return; }
+  var mins = Math.floor((Date.now() - state.fetchedAt) / 60000);
+  var t = mins < 1 ? "now" : (mins < 60 ? mins + "m" : Math.floor(mins / 60) + "h");
+  el.stamp.textContent = state.stale ? t + " · stale" : t;
+  el.stamp.className = "stamp" + (state.stale ? " stale" : "");
+}
+
+/* ---------------------------------------------------------------- data path */
+
+/* Geocoding is cached per city in localStorage: a city's coordinates do not
+   change, and this turns the common case into one request instead of two.
+   localStorage can throw in a sandboxed frame, so every access is guarded. */
+function cachedPlace(city) {
+  try {
+    var raw = localStorage.getItem("cd-wx-place:" + city.toLowerCase());
+    if (!raw) return null;
+    var p = JSON.parse(raw);
+    return (p && typeof p.lat === "number" && typeof p.lon === "number") ? p : null;
+  } catch (e) { return null; }
+}
+function cachePlace(city, place) {
+  try { localStorage.setItem("cd-wx-place:" + city.toLowerCase(), JSON.stringify(place)); } catch (e) {}
+}
+
+function resolvePlace(city) {
+  if (!city || city.toLowerCase() === "paris") return Promise.resolve(DEFAULT_PLACE);
+  var hit = cachedPlace(city);
+  if (hit) return Promise.resolve(hit);
+
+  var url = GEO_API + "?name=" + encodeURIComponent(city) + "&count=1&language=en&format=json";
+  return fetch(url, { headers: { Accept: "application/json" } })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      var m = j && j.results && j.results[0];
+      if (!m) return null;
+      var place = { name: m.name, lat: m.latitude, lon: m.longitude };
+      cachePlace(city, place);
+      return place;
+    })
+    .catch(function () { return null; });
+}
+
+function load() {
+  if (!state.place || state.inflight) return;
+  state.inflight = true;
+
+  var url = FC_API
+    + "?latitude=" + encodeURIComponent(state.place.lat)
+    + "&longitude=" + encodeURIComponent(state.place.lon)
+    + "&current=temperature_2m,weather_code"
+    + "&hourly=temperature_2m,precipitation_probability,weather_code"
+    + "&forecast_days=2&timezone=auto&timeformat=unixtime";
+
+  var ctl = new AbortController();
+  var to = setTimeout(function () { ctl.abort(); }, TIMEOUT_MS);
+
+  fetch(url, { signal: ctl.signal, headers: { Accept: "application/json" } })
+    .then(function (r) { if (!r.ok) throw new Error("http" + r.status); return r.json(); })
+    .then(function (j) {
+      state.data = j; state.fetchedAt = Date.now(); state.stale = false;
+      render();
+    })
+    .catch(function () {
+      /* Keep the last forecast and mark it old. An hour-old temperature is
+         still broadly true; a blank panel is not information. */
+      if (state.data) { state.stale = true; render(); }
+      else setMsg("Can't reach the weather service.");
+    })
+    .finally(function () { clearTimeout(to); state.inflight = false; });
+}
+
+function schedule() {
+  if (state.timer) clearInterval(state.timer);
+  state.timer = setInterval(function () { if (!document.hidden) load(); }, REFRESH_MS);
+}
+
+document.addEventListener("visibilitychange", function () {
+  if (document.hidden) return;
+  stampNow();
+  /* Coming back from a throttled hidden frame: re-render first so the hour
+     columns are correct even before the network answers. */
+  if (state.data) render();
+  if (Date.now() - state.fetchedAt > REFRESH_MS) load();
+});
+
+setInterval(function () { if (!document.hidden) stampNow(); }, 60000);
+
+/* ------------------------------------------------------------------ the SDK */
+
+function setUiSize(n) {
+  var lvl = (typeof n === "number" && n >= 1 && n <= 10) ? n : 6;
+  document.documentElement.style.setProperty("--fs", (10.5 + lvl * 0.6).toFixed(2) + "px");
+}
+
+function applyConfig(cfg, units) {
+  var city = String((cfg && cfg.city) || "Paris").trim().slice(0, 64) || "Paris";
+  var nextUnits = (units === "imperial") ? "imperial" : "metric";
+
+  var unitsChanged = nextUnits !== state.units;
+  var cityChanged  = city.toLowerCase() !== String(state.city || "").toLowerCase();
+  state.units = nextUnits;
+
+  /* Units are a pure re-render: same data, different arithmetic. Refetching
+     here would be a wasted request on every theme/size change the host sends. */
+  if (!cityChanged) {
+    if (unitsChanged && state.data) render();
+    return;
+  }
+
+  state.city = city;
+  state.data = null; state.fetchedAt = 0; state.stale = false;
+  setMsg("Loading…");
+
+  resolvePlace(city).then(function (place) {
+    if (!place) {
+      setMsg("Couldn't find “" + city + "”. Try another spelling at codriver.io/account.");
+      return;
+    }
+    state.place = place;
+    el.place.textContent = place.name;
+    load();
+    schedule();
+  });
+}
+
+window.addEventListener("message", function (ev) {
+  var d = ev.data;
+  if (!d || d.codriver !== 1 || d.type !== "context") return;
+
+  /* Trust-on-first-use: pin whichever origin sends the first well-formed
+     context, and require every later one to match. */
+  if (state.hostOrigin === null) state.hostOrigin = ev.origin;
+  else if (ev.origin !== state.hostOrigin) return;
+
+  document.documentElement.setAttribute("data-theme", d.theme === "light" ? "light" : "dark");
+  setUiSize(d.uiSize);
+  applyConfig(d.config || {}, d.units);
+});
+
+try { window.parent.postMessage({ codriver: 1, type: "ready" }, "*"); } catch (e) {}
+
+setTimeout(function () { if (!state.city) applyConfig({}, "metric"); }, 1200);
+</script>
+</body>
+</html>

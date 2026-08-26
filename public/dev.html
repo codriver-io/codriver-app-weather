@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Weather for codriver — dev harness</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* Deliberately plain. This page never ships to a car — it exists so the
+     widget can be developed without running codriver at all. It fakes exactly
+     what the host does: post a `context` message, and answer `ready`. */
+  :root { color-scheme: dark; }
+  body { margin:0; padding:24px; background:#16181d; color:#e9ecef;
+         font:14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start; }
+  h1 { font-size:15px; margin:0 0 4px; font-weight:600; }
+  p.sub { margin:0 0 16px; color:#9aa2ad; font-size:12px; max-width:46ch; }
+  fieldset { border:1px solid #2b2f36; border-radius:6px; padding:12px 14px; margin:0 0 12px; }
+  legend { color:#9aa2ad; font-size:11px; text-transform:uppercase; letter-spacing:.08em; padding:0 4px; }
+  label { display:block; margin:8px 0 2px; font-size:11px; color:#9aa2ad; }
+  input, select { width:100%; background:#0c0e11; color:#e9ecef; border:1px solid #333840;
+                  border-radius:4px; padding:6px 8px; font:inherit; font-size:13px; }
+  .row { display:flex; gap:8px; } .row > * { flex:1; }
+  button { background:#2f6df6; color:#fff; border:0; border-radius:4px; padding:8px 12px;
+           font:inherit; font-weight:600; cursor:pointer; margin-top:12px; }
+  #slot-wrap { display:flex; flex-direction:column; gap:8px; }
+  /* The real slot: ~300x130 CSS px. Resizable, so you can prove the layout
+     holds when the host hands you a different box. */
+  #slot { width:300px; height:130px; border:1px solid #333840; border-radius:8px;
+          overflow:hidden; resize:both; }
+  iframe { width:100%; height:100%; border:0; display:block; }
+  .hint { color:#6b7480; font-size:11px; margin-top:8px; max-width:42ch; }
+</style>
+</head>
+<body>
+  <div>
+    <h1>Weather for codriver</h1>
+    <p class="sub">Fakes the codriver host. Change anything and it re-posts a
+      <code>context</code> message, exactly as the car would.</p>
+    <fieldset>
+      <legend>Settings (config)</legend>
+      <label>City</label>
+      <input id="city" value="Paris">
+    </fieldset>
+    <fieldset>
+      <legend>Host context</legend>
+      <div class="row">
+        <div><label>Theme</label>
+          <select id="theme"><option value="dark">dark</option><option value="light">light</option></select></div>
+        <div><label>Units</label>
+          <select id="units"><option value="metric">metric</option><option value="imperial">imperial</option></select></div>
+      </div>
+      <label>uiSize (1–10)</label>
+      <input id="uiSize" type="number" min="1" max="10" value="6">
+    </fieldset>
+    <button id="apply">Send context</button>
+    <p class="hint">The widget also posts <code>ready</code> on load; this page
+      answers it, which is the same handshake the car performs.</p>
+  </div>
+
+  <div id="slot-wrap">
+    <div id="slot"><iframe id="f" src="./index.html"></iframe></div>
+    <p class="hint">Drag the bottom-right corner to resize. The host re-sends
+      <code>context</code> on resize, and so does this harness.</p>
+  </div>
+
+<script>
+  var f = document.getElementById("f");
+  function ctx() {
+    var slot = document.getElementById("slot");
+    return {
+      codriver: 1, type: "context",
+      theme: document.getElementById("theme").value,
+      units: document.getElementById("units").value,
+      uiSize: Number(document.getElementById("uiSize").value) || 6,
+      slot: 1, device: "other",
+      size: { w: slot.clientWidth, h: slot.clientHeight },
+      config: readConfig()
+    };
+  }
+  function send() { try { f.contentWindow.postMessage(ctx(), "*"); } catch (e) {} }
+  document.getElementById("apply").addEventListener("click", send);
+  f.addEventListener("load", send);
+  // The widget asks for a snapshot; answer it. Re-posting ready is legal and
+  // is the supported way for a widget to request fresh config.
+  window.addEventListener("message", function (ev) {
+    if (ev.data && ev.data.codriver === 1 && ev.data.type === "ready") send();
+  });
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () { send(); }).observe(document.getElementById("slot"));
+  }
+  function readConfig() { return { city: document.getElementById("city").value }; }
+</script>
+</body>
+</html>
