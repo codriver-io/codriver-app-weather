@@ -130,6 +130,8 @@ var FC_API     = "https://api.open-meteo.com/v1/forecast";
 /* Paris, so the widget is useful the moment it is installed and still works if
    the geocoder is unreachable. */
 var DEFAULT_PLACE = { name: "Paris", lat: 48.8566, lon: 2.3522 };
+/* A custom-page URL can pin a city even when the host sends default config. */
+var URL_CITY = (new URLSearchParams(window.location.search).get("city") || "").trim().slice(0, 64);
 
 var el = {
   place: document.getElementById("place"),
@@ -328,7 +330,7 @@ function setUiSize(n) {
 }
 
 function applyConfig(cfg, units) {
-  var city = String((cfg && cfg.city) || "Paris").trim().slice(0, 64) || "Paris";
+  var city = URL_CITY || String((cfg && cfg.city) || "Paris").trim().slice(0, 64) || "Paris";
   var nextUnits = (units === "imperial") ? "imperial" : "metric";
 
   var unitsChanged = nextUnits !== state.units;
@@ -348,7 +350,9 @@ function applyConfig(cfg, units) {
 
   resolvePlace(city).then(function (place) {
     if (!place) {
-      setMsg("Couldn't find “" + city + "”. Try another spelling at codriver.io/account.");
+      setMsg("Couldn't find “" + city + "”. " + (URL_CITY
+        ? "Check the city in your widget URL."
+        : "Try another spelling at codriver.io/account."));
       return;
     }
     state.place = place;
