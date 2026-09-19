@@ -1,4 +1,8 @@
-# Weather for codriver
+# Weather — codriver app example
+
+A minimal example for developers building [codriver.io](https://codriver.io)
+apps with plain HTML, CSS and JavaScript. It demonstrates the `ready` /
+`context` handshake, configurable cities, themes, units, and adjustable UI size.
 
 Current conditions and the next four hours for a city you choose, in a codriver widget slot. Data from [Open-Meteo](https://open-meteo.com) — no key, one request per refresh.
 
@@ -45,31 +49,61 @@ for this reason — its default ISO strings carry no offset, so a browser parses
 them in its own timezone and silently picks the wrong hours whenever the car and
 the city differ.
 
-## Develop it
+## Run locally
+
+Requires Python 3. No build step or runtime dependencies are needed.
 
 ```bash
-npm install          # wrangler only
-npm run serve        # http://localhost:8792/dev.html
+git clone https://github.com/codriver-io/codriver-app-weather.git
+cd codriver-app-weather
+python3 -m http.server 8792 -d public
 ```
+
+Open <http://localhost:8792/dev.html> for the host simulator, or
+<http://localhost:8792/?city=Montreal> for the standalone widget.
 
 `public/dev.html` fakes the codriver host: it posts a `context` message,
 answers the widget's `ready`, and re-posts on resize — the same handshake the
 car performs. Change the theme, units, uiSize or settings and watch the panel
 react. The slot is resizable so you can prove the layout holds.
 
+## Build your own app
+
+- `public/index.html` contains the widget layout, host messaging, geocoding,
+  and forecast rendering.
+- `public/dev.html` simulates the host for local development.
+- `codriver-app.json` provides example marketplace metadata and a city setting.
+
+Replace the weather display and data source for your use case, then update
+names, URLs, and configuration fields in the manifest. See the
+[codriver app guide](https://developer.codriver.io/guides/build-an-app)
+for the integration contract.
+
+## Host your copy
+
+Serve `public/` on an HTTPS static host. Set your custom-page URL and manifest
+URLs to your deployment address.
+
+The included deployment script targets the `weather-codriver` Cloudflare Pages
+project. Change `--project-name` in `package.json` to your own project first.
+With Node.js, npm, and a Cloudflare account available:
+
 ```bash
-npm run deploy       # wrangler pages deploy
+npm install
+npx wrangler login
+npm run deploy
 ```
 
 ## What it does not do
 
 - **It never learns where you are.** codriver does not pass location, speed or
-  heading to an extension, so the city is a setting rather than your position — which is also why it shows the weather where you are going, not where you are.
+  heading to an extension, so the city is a setting rather than your position.
 - It cannot read your codriver session, your route, or your account. It runs on
   its own origin; the browser's same-origin policy is what enforces that, not a
   promise in this README.
-- No analytics, no tracking, no cookies. The only network calls are to the data
-  API named above.
+- No analytics or cookies. Requests go to Open-Meteo’s forecast and geocoding
+  APIs. The selected city’s coordinates are cached in `localStorage` when
+  available; storage access failures are handled.
 - No `innerHTML` anywhere in the page: every value from the API is written with
   `textContent` onto constructed nodes.
 
@@ -81,4 +115,9 @@ one-minute age-label timer. Both skip their work when the frame is hidden.
 Chromium throttles hidden frames hard, so returning
 from hidden re-checks freshness rather than assuming the timer kept running.
 
-MIT licensed.
+## License
+
+Source code is [MIT licensed](LICENSE), copyright 9570-6198 Québec inc.
+Open-Meteo data and API access have separate terms; the code license does not
+grant rights to their data or service. Review [Open-Meteo](https://open-meteo.com)
+for attribution, usage limits, and the plan appropriate to your deployment.
